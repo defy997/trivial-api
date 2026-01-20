@@ -1,0 +1,13 @@
+.main-tabs.hide-content .ant-tabs-content-holder {
+  display: none;
+}
+
+.main-tabs.hide-content {
+  margin-bottom: 0;
+}
+
+.sql-editor-container {
+  padding: 12px;
+}
+
+

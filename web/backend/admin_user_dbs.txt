@@ -1,0 +1,2 @@
+admin=*
+defy=tenant_defy7,tenant_defy_allowed,tenant_defy_test2,tenant_defy_persist,tenant_defy_persist2,tenant_defy_mapped

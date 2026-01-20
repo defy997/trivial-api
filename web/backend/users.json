@@ -1,0 +1,38 @@
+{
+  "admin": {
+    "password_hash": "$2b$12$sSC8NnP/kMALOxot6YdLVeIgTccCeugL/wcYis6zxhPBOe2ihUb5O",
+    "is_admin": true,
+    "patterns": [
+      "*",
+      "demo",
+      "git"
+    ]
+  },
+  "defy": {
+    "password_hash": "$2b$12$xaIMrBlkTDDpjPgti0CLOe9I9TCxGOe20SiJH4H.iVFs.TUxHT9bm",
+    "is_admin": false,
+    "patterns": [
+      "tenant_defy7",
+      "tenant_defy_allowed",
+      "tenant_defy_test2",
+      "tenant_defy_persist",
+      "tenant_defy_persist2",
+      "tenant_defy_mapped",
+      "aaa"
+    ]
+  },
+  "newtempuser": {
+    "password_hash": "$2b$12$vLQb5KiDWbJSVIrW3Cv6DeSKcCv9RfWlrqbEwsjlldcxSC2Hc7DVa",
+    "is_admin": false,
+    "patterns": []
+  },
+  "123": {
+    "password_hash": "$2b$12$hJXs6cYrsqUtAQvQ.O/T..R8JkmuduxJw.UPL0GWcFSiBqxg2DPja",
+    "is_admin": false,
+    "patterns": [
+      "demo",
+      "defy",
+      "qwe"
+    ]
+  }
+}
