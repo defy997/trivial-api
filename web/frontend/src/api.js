@@ -222,11 +222,13 @@ export async function listUsers() {
   return await res.json();
 }
 
-export async function createUser(userData) {
+export async function createUser(userData, adminPassword) {
   const base = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "";
+  const headers = { "Content-Type": "application/json" };
+  if (adminPassword) headers["X-Admin-Password"] = adminPassword;
   const res = await authFetch(base + "/api/admin/users", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(userData),
   });
   if (!res.ok) {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Card, Table, Button, Space, Modal, Form, Input, message, Tag, Popconfirm } from "antd";
+import { Card, Table, Button, Space, Modal, Form, Input, message, Tag, Popconfirm, Checkbox } from "antd";
 import { UserOutlined, DatabaseOutlined, PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 import { listUsers, createUser, deleteUser } from "../api";
 
@@ -38,7 +38,7 @@ export default function AdminPanel() {
         password: values.password,
         is_admin: values.isAdmin || false,
         patterns: values.patterns ? values.patterns.split(',').map(p => p.trim()) : []
-      });
+      }, values.adminPassword);
 
       message.success("用户创建成功");
       setCreateUserVisible(false);
@@ -236,7 +236,15 @@ export default function AdminPanel() {
             label="管理员权限"
             valuePropName="checked"
           >
-            <input type="checkbox" />
+            <Checkbox />
+          </Form.Item>
+
+          <Form.Item
+            name="adminPassword"
+            label="管理员密码（确认修改）"
+            help="需要输入当前管理员密码以确认创建/修改用户（若未填写且非首次创建，后端会拒绝）"
+          >
+            <Input.Password placeholder="管理员密码（用于确认）" />
           </Form.Item>
 
           <Form.Item

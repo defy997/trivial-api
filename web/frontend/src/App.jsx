@@ -8,7 +8,7 @@ import TableView from "./components/TableView";
 import AdminPanel from "./components/AdminPanel";
 import { runSQL, saveQuery, getDatabases, getTablesInDatabase, login, setAuthToken, getAuthToken, clearAuthToken } from "./api";
 import "./App.css";
-
+import logo from './picture/logo.png';
 const { Header, Content } = Layout;
 const { TextArea } = Input;
 const { Title } = Typography;
@@ -394,8 +394,9 @@ export default function App() {
       </Modal>
       <Header style={{ color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <img src={logo} alt="logo" style={{ width: '32px', height: '32px' }} />
         <Title style={{ color: "#fff", margin: 0 }} level={4}>
-          TrivialDB 可视化
+          魔丸云可视数据库
         </Title>
           <Space>
             {authTokenState ? (

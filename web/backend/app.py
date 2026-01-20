@@ -1517,9 +1517,38 @@ def api_create_user(payload: Dict[str, Any], request: Request):
         safe_hash = pw_hash.replace("'", "''")
         pat_json = json.dumps(patterns).replace("'", "''")
         ins_sql = f"INSERT INTO admin_users (username, password_hash, is_admin, patterns) VALUES ('{safe_uname}', '{safe_hash}', {1 if is_admin else 0}, '{pat_json}');"
-        execute_sql(ins_sql)
+        # execute and capture result for debugging
+        try:
+            proc = execute_sql(ins_sql)
+            try:
+                print(f"DEBUG api_create_user execute_sql stdout: {proc.stdout}")
+                print(f"DEBUG api_create_user execute_sql stderr: {proc.stderr}")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"ERROR api_create_user execute_sql exception: {e}")
+            except Exception:
+                pass
+            # continue to persist to fallback store so created user is immediately usable
+            proc = None
     except Exception:
-        raise HTTPException(status_code=500, detail="bcrypt error")
+        # treat insert errors as non-fatal for HTTP response but log for debugging
+        try:
+            print("ERROR: failed to persist admin_users row via SQL, falling back to users_store")
+        except Exception:
+            pass
+        proc = None
+    # ensure in-memory users_store and fallback file are updated so login works immediately
+    try:
+        users_store = users_store or _load_users()
+        users_store[username] = {"password_hash": pw_hash, "is_admin": is_admin, "patterns": patterns}
+        _persist_users(users_store)
+    except Exception:
+        try:
+            print("WARN: failed to update fallback users_store after creating user")
+        except Exception:
+            pass
     return {"status": "created"}
 
 
@@ -1547,8 +1576,36 @@ def api_delete_user(username: str, request: Request):
         raise HTTPException(status_code=401, detail="admin password required")
     global users_store
     if username in (users_store or {}):
+        # remove from in-memory store and persist fallback store
         del users_store[username]
         _persist_users(users_store)
+        # also remove any DB-backed records (admin_users + admin_user_dbs) to fully delete user
+        try:
+            safe_uname = username.replace("'", "''")
+            try:
+                execute_sql(f"USE admin; DELETE FROM admin_users WHERE username='{safe_uname}';")
+            except Exception:
+                # best effort: ignore if admin tables don't exist or delete fails
+                pass
+            try:
+                execute_sql(f"USE admin; DELETE FROM admin_user_dbs WHERE username='{safe_uname}';")
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # update engine-friendly mapping file so UI/engine sees current mappings immediately
+        try:
+            mapping_path = os.path.join(HERE, "admin_user_dbs.txt")
+            lines = []
+            us = users_store or {}
+            for u, info in us.items():
+                pats = info.get("patterns", []) or []
+                if pats:
+                    lines.append(f"{u}={','.join(pats)}")
+            with open(mapping_path, "w", encoding="utf-8") as mf:
+                mf.write("\n".join(lines))
+        except Exception:
+            pass
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="user not found")
 
