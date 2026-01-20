@@ -1,0 +1,7 @@
+/root/TrivialDB-master/CMakeFiles/trivial_db_lib.dir
+/root/TrivialDB-master/CMakeFiles/trivial_db.dir
+/root/TrivialDB-master/CMakeFiles/edit_cache.dir
+/root/TrivialDB-master/CMakeFiles/rebuild_cache.dir
+/root/TrivialDB-master/src/parser/CMakeFiles/sql_parser.dir
+/root/TrivialDB-master/src/parser/CMakeFiles/edit_cache.dir
+/root/TrivialDB-master/src/parser/CMakeFiles/rebuild_cache.dir
