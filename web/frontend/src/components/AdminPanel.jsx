@@ -50,9 +50,10 @@ export default function AdminPanel() {
   }
 
   // 删除用户
-  async function handleDeleteUser(username) {
+  // accept optional adminPassword passed from confirmation modal
+  async function handleDeleteUser(username, adminPassword) {
     try {
-      await deleteUser(username);
+      await deleteUser(username, adminPassword);
       message.success("用户删除成功");
       loadData();
     } catch (err) {
