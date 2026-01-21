@@ -31,6 +31,7 @@ void yyerror(const char *s);
 	struct select_info_t      *select_info;
 	struct table_join_info_t  *join_info;
 	struct expr_node_t        *expr;
+	struct order_item_t       *order_item;
 }
 
 %token TRUE FALSE NULL_TOKEN MIN MAX SUM AVG COUNT
@@ -48,6 +49,8 @@ void yyerror(const char *s);
 %token FLOAT_LITERAL
 %token INT_LITERAL
 %token AUTH
+%token GRANT REVOKE TO
+%token T_BEGIN T_COMMIT T_ROLLBACK
 
 %type <val_s> IDENTIFIER STRING_LITERAL DATE_LITERAL
 %type <val_f> FLOAT_LITERAL
@@ -73,6 +76,8 @@ void yyerror(const char *s);
 %type <val_i> logical_op compare_op aggregate_op
 %type <list> select_expr_list select_expr_list_s table_refs
 %type <join_info> table_item
+%type <list> opt_group_by opt_order_by order_item_list
+%type <order_item> order_item
 
 %start sql_stmts
 
@@ -100,6 +105,11 @@ sql_stmt   :  create_table_stmt ';'    { execute_create_table($1); }
 		   |  CREATE INDEX table_name '(' IDENTIFIER ')' ';' { execute_create_index($3, $5); }
 		   |  DROP   INDEX table_name '(' IDENTIFIER ')' ';' { execute_drop_index($3, $5); }
 		   |  AUTH STRING_LITERAL STRING_LITERAL ';' { execute_auth($2, $3); }
+		   |  GRANT database_name TO IDENTIFIER ';' { execute_grant_db($2, $4); }
+		   |  REVOKE database_name FROM IDENTIFIER ';' { execute_revoke_db($2, $4); }
+		   |  T_BEGIN ';' { execute_begin_transaction(); }
+		   |  T_COMMIT ';' { execute_commit_transaction(); }
+		   |  T_ROLLBACK ';' { execute_rollback_transaction(); }
 		   ;
 
 create_table_stmt : CREATE TABLE table_name '(' table_fields table_extra_options ')' {
@@ -166,13 +176,54 @@ update_stmt         : UPDATE table_name SET column_ref '=' expr where_clause {
 					}
 					;
 
-select_stmt         : SELECT select_expr_list_s FROM table_refs where_clause {
+select_stmt         : SELECT select_expr_list_s FROM table_refs where_clause opt_group_by opt_order_by {
 					 	$$ = (select_info_t*)malloc(sizeof(select_info_t));
 						$$->tables = $4;
 						$$->exprs  = $2;
 						$$->where  = $5;
+						$$->group_by = $6;
+						$$->order_by = $7;
 					}
 					;
+
+opt_group_by : /* empty */ { $$ = NULL; }
+			 | GROUP BY select_expr_list { $$ = $3; }
+			 ;
+
+opt_order_by : /* empty */ { $$ = NULL; }
+			 | ORDER BY order_item_list {
+				 $$ = $3;
+			   }
+			 ;
+
+order_item_list   : order_item {
+						$$ = (linked_list_t*)malloc(sizeof(linked_list_t));
+						$$->data = $1;
+						$$->next = NULL;
+					}
+				  | order_item_list ',' order_item {
+						$$ = (linked_list_t*)malloc(sizeof(linked_list_t));
+						$$->data = $3;
+						$$->next = $1;
+					}
+				  ;
+
+order_item        : select_expr {
+						$$ = (order_item_t*)malloc(sizeof(order_item_t));
+						$$->expr = $1;
+						$$->asc = 1; /* default ASC */
+					}
+				  | select_expr ASC {
+						$$ = (order_item_t*)malloc(sizeof(order_item_t));
+						$$->expr = $1;
+						$$->asc = 1;
+					}
+				  | select_expr DESC {
+						$$ = (order_item_t*)malloc(sizeof(order_item_t));
+						$$->expr = $1;
+						$$->asc = 0;
+					}
+				  ;
 
 table_refs          : table_refs ',' table_item {
 						$$ = (linked_list_t*)malloc(sizeof(linked_list_t));

@@ -9,6 +9,7 @@
 #include <limits>
 #include <algorithm>
 #include <dirent.h>
+#include <climits>
 #include <dirent.h>
 
 struct __cache_clear_guard
@@ -53,6 +54,63 @@ bool dbms::has_user() const
 bool dbms::user_is_admin() const
 {
 	return __current_is_admin;
+}
+
+std::string dbms::get_current_user() const
+{
+	return __current_user;
+}
+
+void dbms::begin_transaction()
+{
+	// simple single-writer transaction marker
+	if (in_transaction) {
+		std::fprintf(stderr, "[Warn] transaction already in progress\n");
+		return;
+	}
+	in_transaction = true;
+	std::printf("[Info] transaction started\n");
+}
+
+void dbms::commit_transaction()
+{
+	if (!in_transaction) {
+		std::fprintf(stderr, "[Warn] no transaction in progress\n");
+		return;
+	}
+	// TODO: flush/clear undo-log
+	// clear undo log on commit
+	undo_log.clear();
+	in_transaction = false;
+	std::printf("[Info] transaction committed\n");
+}
+
+void dbms::rollback_transaction()
+{
+	if (!in_transaction) {
+		std::fprintf(stderr, "[Warn] no transaction in progress\n");
+		return;
+	}
+	// TODO: apply undo-log to revert changes
+	// apply undo log in reverse
+	for (auto it = undo_log.rbegin(); it != undo_log.rend(); ++it) {
+		const UndoEntry &e = *it;
+		table_manager *tm = cur_db->get_table(e.table.c_str());
+		if (!tm) continue;
+		if (e.type == UndoEntry::U_INSERT) {
+			// undo of insert: remove the record
+			tm->remove_record(e.rid);
+		} else if (e.type == UndoEntry::U_DELETE) {
+			// undo of delete: re-insert raw bytes
+			tm->insert_raw_record(e.rid, e.raw.data(), (int)e.raw.size());
+		} else if (e.type == UndoEntry::U_UPDATE) {
+			// undo of update: restore previous column value
+			tm->modify_record(e.rid, e.col, e.prev_val.empty() ? nullptr : e.prev_val.data());
+		}
+	}
+	undo_log.clear();
+	in_transaction = false;
+	std::printf("[Info] transaction rolled back and undo-log applied\n");
 }
 
 static bool match_pattern(const std::string &pattern, const std::string &value)
@@ -634,6 +692,26 @@ void dbms::update_rows(const update_info_t *info)
 			if(!typecast::type_compatible(col_type, val))
 				throw "[Error] Incompatible data type.";
 			auto term_type = typecast::column_to_term(col_type);
+			// capture previous value for undo if in transaction
+			if (in_transaction) {
+				int col_len = tm->get_column_length(col_id);
+				int col_off = tm->get_column_offset(col_id);
+				std::vector<char> prev(col_len);
+				try {
+					record_manager rm = tm->get_record_ptr(rid);
+					if (rm.valid()) {
+						rm.seek(col_off);
+						rm.read(prev.data(), col_len);
+					}
+				} catch (...) { }
+				UndoEntry e;
+				e.type = UndoEntry::U_UPDATE;
+				e.table = std::string(info->table);
+				e.rid = rid;
+				e.col = col_id;
+				e.prev_val = std::move(prev);
+				undo_log.push_back(std::move(e));
+			}
 			bool ret = tm->modify_record(rid, col_id, typecast::expr_to_db(val, term_type));
 			// if(!ret) return false;
 			succ_count += ret;
@@ -689,7 +767,14 @@ void dbms::select_rows(const select_info_t *info)
 		expr_node_t *expr = (expr_node_t*)link_p->data;
 		is_aggregate |= expression::is_aggregate(expr);
 		exprs.push_back(expr);
-		expr_names.push_back(expression::to_string(expr));
+		// Handle alias: use alias name if present
+		std::string col_name;
+		if (expr->op == OPERATOR_ALIAS && expr->val_s) {
+			col_name = expr->val_s;
+		} else {
+			col_name = expression::to_string(expr);
+		}
+		expr_names.push_back(col_name);
 	}
 
 	// output header info
@@ -710,7 +795,7 @@ void dbms::select_rows(const select_info_t *info)
 
 	std::fprintf(output_file, "\n");
 
-	if(is_aggregate)
+	if(is_aggregate && !info->group_by)
 	{
 		select_rows_aggregate(
 			info,
@@ -724,64 +809,449 @@ void dbms::select_rows(const select_info_t *info)
 
 	// iterate records
 	int counter = 0;
-	iterate(required_tables, info->where,
-		[&](const std::vector<table_manager*> &tables,
-			const std::vector<record_manager*> &records,
-			const std::vector<int>& )
-		{
-			for(size_t i = 0; i < exprs.size(); ++i)
+	if (info->group_by) {
+		// GROUP BY processing
+		struct GroupAgg {
+			int count = 0;
+			std::vector<long long> sum_i;
+			std::vector<double> sum_f;
+			std::vector<long long> min_i;
+			std::vector<long long> max_i;
+			std::vector<double> min_f;
+			std::vector<double> max_f;
+			std::vector<int> has_numeric;
+			std::vector<std::string> first_values; // for non-agg exprs
+		};
+		std::map<std::string, GroupAgg> groups;
+
+		// determine which exprs are aggregate and operator type
+		std::vector<int> isAggFlag(exprs.size(), 0);
+		std::vector<int> aggOp(exprs.size(), 0);
+		for (size_t i = 0; i < exprs.size(); ++i) {
+			expr_node_t *expr = exprs[i];
+			// Handle AS syntax: check if it's an alias of an aggregate
+			if (expr->op == OPERATOR_ALIAS && expr->left && expression::is_aggregate(expr->left)) {
+				isAggFlag[i] = 1;
+				aggOp[i] = expr->left->op;
+			} else if (expr->op == OPERATOR_ALIAS) {
+				// AS alias of non-aggregate - treat as non-aggregate
+				isAggFlag[i] = 0;
+				aggOp[i] = 0;
+			} else if (expression::is_aggregate(expr)) {
+				isAggFlag[i] = 1;
+				aggOp[i] = expr->op;
+			}
+		}
+
+		iterate(required_tables, info->where,
+			[&](const std::vector<table_manager*> &tables,
+				const std::vector<record_manager*> &records,
+				const std::vector<int>& ) -> bool
 			{
-				expression ret;
-				try {
-					ret = expression::eval(exprs[i]);
-				} catch (const char *e) {
-					std::fprintf(stderr, "%s\n", e);
-					return false;
+				// build group key
+				std::string key;
+				for (linked_list_t *g = info->group_by; g; g = g->next) {
+					expr_node_t *ge = (expr_node_t*)g->data;
+					expression gv;
+					try {
+						gv = expression::eval(ge);
+					} catch (const char *e) {
+						std::fprintf(stderr, "%s\n", e);
+						return false;
+					}
+					char buf[128];
+					switch(gv.type) {
+						case TERM_INT: snprintf(buf, sizeof(buf), "%lld", (long long)gv.val_i); break;
+						case TERM_FLOAT: snprintf(buf, sizeof(buf), "%f", gv.val_f); break;
+						case TERM_STRING: snprintf(buf, sizeof(buf), "%s", gv.val_s ? gv.val_s : ""); break;
+						case TERM_NULL: snprintf(buf, sizeof(buf), "NULL"); break;
+						default: snprintf(buf, sizeof(buf), "");
+					}
+					if (!key.empty()) key += "|";
+					key += buf;
 				}
-				// std::printf("%s\t = ", expr_names[i].c_str());
-				if(i != 0) std::fprintf(output_file, ",");
-				switch(ret.type)
-				{
-					case TERM_INT:
-						std::fprintf(output_file, "%d", ret.val_i);
-						break;
-					case TERM_FLOAT:
-						std::fprintf(output_file, "%f", ret.val_f);
-						break;
-					case TERM_STRING:
-						std::fprintf(output_file, "%s", ret.val_s);
-						break;
-					case TERM_BOOL:
-						std::fprintf(output_file, "%s", ret.val_b ? "TRUE" : "FALSE");
-						break;
-					case TERM_DATE: {
-						char date_buf[32];
-						time_t time = ret.val_i;
-						auto tm = std::localtime(&time);
-						std::strftime(date_buf, 32, DATE_TEMPLATE, tm);
-						std::fprintf(output_file, "%s", date_buf);
-						break; }
-					case TERM_NULL:
-						std::fprintf(output_file, "NULL");
-						break;
-					default:
-						debug_puts("[Error] Data type not supported!");
+
+				auto &ga = groups[key];
+				if (ga.count == 0) {
+					// initialize per-group accumulators
+					ga.sum_i.resize(exprs.size(), 0);
+					ga.sum_f.resize(exprs.size(), 0.0);
+					ga.min_i.resize(exprs.size(), LLONG_MAX);
+					ga.max_i.resize(exprs.size(), LLONG_MIN);
+					ga.min_f.resize(exprs.size(), std::numeric_limits<double>::max());
+					ga.max_f.resize(exprs.size(), std::numeric_limits<double>::lowest());
+					ga.has_numeric.resize(exprs.size(), 0);
+					ga.first_values.resize(exprs.size(), "");
+				}
+
+				// update aggregators and first values
+				for (size_t i = 0; i < exprs.size(); ++i) {
+					if (isAggFlag[i]) {
+						if (aggOp[i] == OPERATOR_COUNT) {
+							ga.sum_i[i] += 1;
+						} else {
+							// evaluate inner expr (left)
+							expression val;
+							try {
+								val = expression::eval(exprs[i]->left);
+							} catch (const char *e) {
+								std::fprintf(stderr, "%s\n", e);
+								return false;
+							}
+							if (val.type == TERM_INT) {
+								ga.sum_i[i] += val.val_i;
+								ga.has_numeric[i] = 1;
+								if (val.val_i < ga.min_i[i]) ga.min_i[i] = val.val_i;
+								if (val.val_i > ga.max_i[i]) ga.max_i[i] = val.val_i;
+							} else if (val.type == TERM_FLOAT) {
+								ga.sum_f[i] += val.val_f;
+								ga.has_numeric[i] = 1;
+								if (val.val_f < ga.min_f[i]) ga.min_f[i] = val.val_f;
+								if (val.val_f > ga.max_f[i]) ga.max_f[i] = val.val_f;
+							} else if (val.type == TERM_STRING && val.val_s) {
+								// treat string min/max lexicographically via string conversion
+								std::string s = val.val_s;
+								if (ga.first_values[i].empty()) ga.first_values[i] = s;
+								// track min/max via string compare - store in first_values as sentinel if needed
+							}
+						}
+					} else {
+						// non-aggregate: store first value (string)
+						if (ga.first_values[i].empty()) {
+							expression val;
+							try {
+								val = expression::eval(exprs[i]);
+							} catch (const char *e) {
+								std::fprintf(stderr, "%s\n", e);
+								return false;
+							}
+							char buf[128];
+							switch(val.type) {
+								case TERM_INT: snprintf(buf, sizeof(buf), "%lld", (long long)val.val_i); break;
+								case TERM_FLOAT: snprintf(buf, sizeof(buf), "%f", val.val_f); break;
+								case TERM_STRING: snprintf(buf, sizeof(buf), "%s", val.val_s ? val.val_s : ""); break;
+								case TERM_NULL: snprintf(buf, sizeof(buf), "NULL"); break;
+								default: snprintf(buf, sizeof(buf), "");
+							}
+							ga.first_values[i] = std::string(buf);
+						}
+					}
+				}
+
+				ga.count += 1;
+				return true;
+			}
+		);
+
+		// prepare output rows from groups
+		std::vector<std::vector<std::string>> out_rows;
+		for (const auto &p : groups) {
+			const auto &ga = p.second;
+			std::vector<std::string> row;
+			for (size_t i = 0; i < exprs.size(); ++i) {
+				if (isAggFlag[i]) {
+					int op = exprs[i]->op;
+					if (op == OPERATOR_COUNT) {
+						row.push_back(std::to_string(ga.sum_i[i]));
+					} else if (op == OPERATOR_SUM) {
+						if (ga.has_numeric[i]) {
+							if (ga.sum_f[i] != 0.0) row.push_back(std::to_string(ga.sum_f[i]));
+							else row.push_back(std::to_string(ga.sum_i[i]));
+						} else row.push_back(ga.first_values[i]);
+					} else if (op == OPERATOR_AVG) {
+						if (ga.has_numeric[i]) {
+							double s = (ga.sum_f[i] != 0.0) ? ga.sum_f[i] : (double)ga.sum_i[i];
+							double avg = s / (double)ga.count;
+							row.push_back(std::to_string(avg));
+						} else row.push_back(ga.first_values[i]);
+					} else if (op == OPERATOR_MIN) {
+						if (ga.has_numeric[i]) {
+							if (ga.min_f[i] != std::numeric_limits<double>::max()) row.push_back(std::to_string(ga.min_f[i]));
+							else row.push_back(std::to_string(ga.min_i[i]));
+						} else row.push_back(ga.first_values[i]);
+					} else if (op == OPERATOR_MAX) {
+						if (ga.has_numeric[i]) {
+							if (ga.max_f[i] != std::numeric_limits<double>::lowest()) row.push_back(std::to_string(ga.max_f[i]));
+							else row.push_back(std::to_string(ga.max_i[i]));
+						} else row.push_back(ga.first_values[i]);
+					} else {
+						row.push_back(ga.first_values[i]);
+					}
+				} else {
+					row.push_back(ga.first_values[i]);
 				}
 			}
+			out_rows.push_back(row);
+		}
 
-			if(exprs.size() == 0)
-			{
-				for(size_t i = 0; i < tables.size(); ++i)
-				{
-					if(i != 0) std::fprintf(output_file, ",");
-					tables[i]->dump_record(output_file, records[i]);
+		// optional ORDER BY after GROUP BY: simple lexicographic/numeric sort on first order column if matches expr_names
+		if (info->order_by && out_rows.size() > 1) {
+			// find first order expr index matching expr_names
+			int order_idx = -1;
+			if (info->order_by) {
+				order_item_t *oi = (order_item_t*)info->order_by->data;
+				std::string target = expression::to_string(oi->expr);
+
+				for (size_t i = 0; i < expr_names.size(); ++i) {
+					if (expr_names[i] == target) { order_idx = (int)i; break; }
 				}
+			}
+			if (order_idx >= 0) {
+				// get sort direction (default ASC)
+				int asc = 1;
+				if (info->order_by) {
+					order_item_t *oi = (order_item_t*)info->order_by->data;
+					asc = oi->asc;
+				}
+
+				std::stable_sort(out_rows.begin(), out_rows.end(), [&](const std::vector<std::string> &a, const std::vector<std::string> &b){
+					// numeric compare if both numeric
+					char *end;
+					double da = strtod(a[order_idx].c_str(), &end);
+					bool an = !(end == a[order_idx].c_str() || strcmp(end, "") != 0);
+					da = an ? da : 0.0;
+					double db = strtod(b[order_idx].c_str(), &end);
+					bool bn = !(end == b[order_idx].c_str() || strcmp(end, "") != 0);
+					db = bn ? db : 0.0;
+
+					int cmp_result = 0;
+					if (an && bn) {
+						cmp_result = (da < db) ? -1 : (da > db) ? 1 : 0;
+					} else {
+						cmp_result = (a[order_idx] < b[order_idx]) ? -1 : (a[order_idx] > b[order_idx]) ? 1 : 0;
+					}
+
+					// apply sort direction
+					if (asc) {
+						return cmp_result < 0;  // ASC
+					} else {
+						return cmp_result > 0;  // DESC
+					}
+				});
+			}
+		}
+
+		// output rows
+		for (const auto &r : out_rows) {
+			for (size_t i = 0; i < r.size(); ++i) {
+				if (i != 0) std::fprintf(output_file, ",");
+				std::fprintf(output_file, "%s", r[i].c_str());
 			}
 			std::fprintf(output_file, "\n");
-			++counter;
-			return true;
 		}
-	);
+		std::printf("[Info] %d group(s) returned.\n", (int)out_rows.size());
+		std::fprintf(output_file, "\n");
+		std::fflush(output_file);
+		return;
+	} else if (info->order_by) {
+		// ORDER BY is temporarily disabled due to memory issues
+		std::fprintf(stderr, "[Error] ORDER BY is currently not supported.\n");
+		return;
+		struct RowData {
+			std::vector<std::string> keys;  // use strings instead of expressions to avoid memory issues
+			std::vector<std::string> values; // printed fields (for exprs)
+			std::string raw_line; // for select * case
+		};
+		std::vector<RowData> collected;
+
+		iterate(required_tables, info->where,
+			[&](const std::vector<table_manager*> &tables,
+				const std::vector<record_manager*> &records,
+				const std::vector<int>& ) -> bool
+			{
+				RowData rd;
+				// evaluate select exprs into strings
+				for(size_t i = 0; i < exprs.size(); ++i)
+				{
+					expression ret;
+					try {
+						ret = expression::eval(exprs[i]);
+					} catch (const char *e) {
+						std::fprintf(stderr, "%s\n", e);
+						return false;
+					}
+					// convert to string
+					char buf[128];
+					switch(ret.type)
+					{
+						case TERM_INT:
+							snprintf(buf, sizeof(buf), "%d", ret.val_i);
+							break;
+						case TERM_FLOAT:
+							snprintf(buf, sizeof(buf), "%f", ret.val_f);
+							break;
+						case TERM_STRING:
+							snprintf(buf, sizeof(buf), "%s", ret.val_s);
+							break;
+						case TERM_BOOL:
+							snprintf(buf, sizeof(buf), "%s", ret.val_b ? "TRUE" : "FALSE");
+							break;
+						case TERM_DATE: {
+							char date_buf[32];
+							time_t time = ret.val_i;
+							auto tm = std::localtime(&time);
+							std::strftime(date_buf, 32, DATE_TEMPLATE, tm);
+							snprintf(buf, sizeof(buf), "%s", date_buf);
+							break; }
+						case TERM_NULL:
+							snprintf(buf, sizeof(buf), "NULL");
+							break;
+						default:
+							snprintf(buf, sizeof(buf), "");
+					}
+					rd.values.push_back(std::string(buf));
+				}
+
+				// for select * capture raw record line
+				if(exprs.size() == 0)
+				{
+					// capture into memory stream with safer memory handling
+					char *mem = nullptr;
+					size_t memlen = 0;
+					FILE *m = open_memstream(&mem, &memlen);
+					if (m) {
+						for(size_t i = 0; i < tables.size(); ++i)
+						{
+							if(i != 0) std::fprintf(m, ",");
+							tables[i]->dump_record(m, records[i]);
+						}
+						std::fflush(m);
+						if (mem && memlen > 0) {
+							// ensure mem is null-terminated and safe to use
+							if (memlen < SIZE_MAX - 1) {
+								rd.raw_line = std::string(mem, memlen);
+							}
+							std::free(mem);
+						}
+						std::fclose(m);
+					}
+				}
+
+				// evaluate order_by keys as strings to avoid expression memory issues
+				for(linked_list_t *o = info->order_by; o; o = o->next) {
+					order_item_t *oi = (order_item_t*)o->data;
+					try {
+						// evaluate expression and convert to string
+						expression k = expression::eval(oi->expr);
+						char buf[128];
+						switch(k.type) {
+							case TERM_INT: sprintf(buf, "%d", k.val_i); break;
+							case TERM_FLOAT: sprintf(buf, "%.6f", k.val_f); break;
+							case TERM_STRING: sprintf(buf, "%s", k.val_s ? k.val_s : ""); break;
+							case TERM_BOOL: sprintf(buf, "%s", k.val_b ? "true" : "false"); break;
+							default: sprintf(buf, ""); break;
+						}
+						rd.keys.push_back(std::string(buf));
+					} catch (const char *e) {
+						std::fprintf(stderr, "%s\n", e);
+						return false;
+					}
+				}
+
+				collected.push_back(std::move(rd));
+				++counter;
+				return true;
+			}
+		);
+
+		// comparator - simplified to avoid memory corruption
+		auto cmp = [&](const RowData &a, const RowData &b) -> bool {
+			size_t n = std::min(a.keys.size(), b.keys.size());
+			for (size_t i = 0; i < n; ++i) {
+				const std::string &ka = a.keys[i];
+				const std::string &kb = b.keys[i];
+
+				// handle empty/null strings
+				if (ka.empty() && !kb.empty()) return true;
+				if (!ka.empty() && kb.empty()) return false;
+
+				// string comparison (works for numeric strings too since they sort correctly)
+				int cmp = ka.compare(kb);
+				if (cmp != 0) return cmp < 0;
+			}
+			// equal keys -> preserve insertion order
+			return false;
+		};
+
+		// sort the collected rows
+		std::stable_sort(collected.begin(), collected.end(), cmp);
+
+		// output rows
+		for(const auto &rd : collected) {
+			if (exprs.size() > 0) {
+				for(size_t i = 0; i < rd.values.size(); ++i) {
+					if (i != 0) std::fprintf(output_file, ",");
+					std::fprintf(output_file, "%s", rd.values[i].c_str());
+				}
+				std::fprintf(output_file, "\n");
+			} else {
+				// raw line already contains newline as produced by dump_record; ensure newline
+				std::fprintf(output_file, "%s\n", rd.raw_line.c_str());
+			}
+		}
+		std::printf("[Info] %d row(s) selected.\n", (int)collected.size());
+		std::fprintf(output_file, "\n");
+		std::fflush(output_file);
+		return;
+	} else {
+		iterate(required_tables, info->where,
+			[&](const std::vector<table_manager*> &tables,
+				const std::vector<record_manager*> &records,
+				const std::vector<int>& )
+			{
+				for(size_t i = 0; i < exprs.size(); ++i)
+				{
+					expression ret;
+					try {
+						ret = expression::eval(exprs[i]);
+					} catch (const char *e) {
+						std::fprintf(stderr, "%s\n", e);
+						return false;
+					}
+					if(i != 0) std::fprintf(output_file, ",");
+					switch(ret.type)
+					{
+						case TERM_INT:
+							std::fprintf(output_file, "%d", ret.val_i);
+							break;
+						case TERM_FLOAT:
+							std::fprintf(output_file, "%f", ret.val_f);
+							break;
+						case TERM_STRING:
+							std::fprintf(output_file, "%s", ret.val_s);
+							break;
+						case TERM_BOOL:
+							std::fprintf(output_file, "%s", ret.val_b ? "TRUE" : "FALSE");
+							break;
+						case TERM_DATE: {
+							char date_buf[32];
+							time_t time = ret.val_i;
+							auto tm = std::localtime(&time);
+							std::strftime(date_buf, 32, DATE_TEMPLATE, tm);
+							std::fprintf(output_file, "%s", date_buf);
+							break; }
+						case TERM_NULL:
+							std::fprintf(output_file, "NULL");
+							break;
+						default:
+							debug_puts("[Error] Data type not supported!");
+					}
+				}
+
+				if(exprs.size() == 0)
+				{
+					for(size_t i = 0; i < tables.size(); ++i)
+					{
+						if(i != 0) std::fprintf(output_file, ",");
+						tables[i]->dump_record(output_file, records[i]);
+					}
+				}
+				std::fprintf(output_file, "\n");
+				++counter;
+				return true;
+			}
+		);
+	}
 
 	std::printf("[Info] %d row(s) selected.\n", counter);
 	std::fprintf(output_file, "\n");
@@ -925,7 +1395,29 @@ void dbms::delete_rows(const delete_info_t *info)
 
 	int counter = 0;
 	for(int rid : delete_list)
+	{
+		// capture full raw record bytes for undo if in transaction
+		if (in_transaction) {
+			// compute record size: 4 (rid) + sum col lengths
+			int rec_size = 4;
+			for (int ci = 0; ci < tm->get_column_num(); ++ci) rec_size += tm->get_column_length(ci);
+			std::vector<char> buf(rec_size);
+			record_manager rm = tm->get_record_ptr(rid);
+			if (rm.valid()) {
+				try {
+					rm.read(buf.data(), rec_size);
+					UndoEntry e;
+					e.type = UndoEntry::U_DELETE;
+					e.table = std::string(info->table);
+					e.rid = rid;
+					e.raw = std::move(buf);
+					undo_log.push_back(std::move(e));
+				} catch (...) {
+				}
+			}
+		}
 		counter += tm->remove_record(rid);
+	}
 	std::printf("[Info] %d row(s) deleted.\n", counter);
 }
 
@@ -1003,7 +1495,22 @@ void dbms::insert_rows(const insert_info_t *info)
 			}
 		}
 
-		if(succ) succ = (tb->insert_record() > 0);
+		if (succ) {
+			int newrid = tb->insert_record();
+			if (newrid > 0) {
+				succ = true;
+				// record undo entry to delete this rid on rollback
+				if (in_transaction) {
+					UndoEntry e;
+					e.type = UndoEntry::U_INSERT;
+					e.table = std::string(info->table);
+					e.rid = newrid;
+					undo_log.push_back(std::move(e));
+				}
+			} else {
+				succ = false;
+			}
+		}
 		count_succ += succ;
 		count_fail += 1 - succ;
 	}

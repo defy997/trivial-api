@@ -94,6 +94,8 @@ build/trivial_db: CMakeFiles/trivial_db.dir/src/main.cpp.o
 build/trivial_db: CMakeFiles/trivial_db.dir/build.make
 build/trivial_db: src/parser/libsql_parser.a
 build/trivial_db: libtrivial_db_lib.a
+build/trivial_db: /usr/lib64/libssl.so
+build/trivial_db: /usr/lib64/libcrypto.so
 build/trivial_db: CMakeFiles/trivial_db.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/root/TrivialDB-master/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable build/trivial_db"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/trivial_db.dir/link.txt --verbose=$(VERBOSE)

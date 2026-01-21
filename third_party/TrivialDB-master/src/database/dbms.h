@@ -12,6 +12,18 @@ class dbms
 {
 	FILE *output_file;
 	database *cur_db;
+	bool in_transaction;
+	// undo-log structure for simple transactions
+	struct UndoEntry {
+		enum Type { U_INSERT, U_DELETE, U_UPDATE } type;
+		std::string table;
+		int rid;
+		std::vector<char> raw; // for DELETE full record
+		int col; // for UPDATE target column
+		std::vector<char> prev_val; // previous value bytes for UPDATE
+	};
+	std::vector<UndoEntry> undo_log;
+	bool writer_locked;
 private:
 	dbms();
 
@@ -89,7 +101,12 @@ public:
 	void clear_current_user();
 	bool has_user() const;
 	bool user_is_admin() const;
+	std::string get_current_user() const;
 	bool db_allowed(const char *db_name) const;
+	/* transaction control */
+	void begin_transaction();
+	void commit_transaction();
+	void rollback_transaction();
 };
 
 #endif

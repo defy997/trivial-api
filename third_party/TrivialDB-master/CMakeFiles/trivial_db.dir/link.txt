@@ -1,1 +1,1 @@
-/usr/bin/c++ -O3 -DNDEBUG -rdynamic CMakeFiles/trivial_db.dir/src/main.cpp.o -o build/trivial_db  src/parser/libsql_parser.a libtrivial_db_lib.a 
+/usr/bin/c++ -O3 -DNDEBUG -rdynamic CMakeFiles/trivial_db.dir/src/main.cpp.o -o build/trivial_db  src/parser/libsql_parser.a libtrivial_db_lib.a /usr/lib64/libssl.so /usr/lib64/libcrypto.so 

@@ -59,6 +59,8 @@ public:
 	void init_temp_record();
 	int insert_record();
 	bool remove_record(int rid);
+	// insert a raw record (full bytes) with specified rid (used for undo/restore)
+	bool insert_raw_record(int rid, const char *data, int size);
 	bool modify_record(int rid, int col, const void* data);
 	bool set_temp_record(int col, const void* data);
 

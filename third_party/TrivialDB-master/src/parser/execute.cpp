@@ -8,6 +8,9 @@
 #include <ctype.h>
 #include <sstream>
 #include <iomanip>
+#include <map>
+#include <algorithm>
+#include <vector>
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -108,12 +111,46 @@ void execute_create_table(const table_def_t *table)
 
 void execute_create_database(const char *db_name)
 {
-	if (!dbms::get_instance()->db_allowed(db_name)) {
-		std::fprintf(stderr, "[Error] permission denied for create database '%s'.\n", db_name);
+	// determine actual database name to create:
+	// - if session user is non-admin and requested name does not start with "username_",
+	//   auto-prefix with "username_"
+	std::string requested = db_name ? std::string(db_name) : std::string("");
+	std::string actual = requested;
+	std::string creator = dbms::get_instance()->get_current_user();
+	bool creator_admin = dbms::get_instance()->user_is_admin();
+	if (!creator_admin && !creator.empty()) {
+		std::string prefix = creator + "_";
+		if (requested.rfind(prefix, 0) != 0) {
+			actual = prefix + requested;
+		}
+	}
+
+	// permission check uses the actual database name
+	bool allowed = dbms::get_instance()->db_allowed(actual.c_str());
+	// allow creation if creator is creating a db prefixed with their username_
+	if (!allowed && !creator_admin && !creator.empty()) {
+		std::string prefix = creator + "_";
+		if (actual.rfind(prefix, 0) == 0) allowed = true;
+	}
+	if (!allowed) {
+		std::fprintf(stderr, "[Error] permission denied for create database '%s'.\n", actual.c_str());
 		free((char*)db_name);
 		return;
 	}
-	dbms::get_instance()->create_database(db_name);
+
+	// create database
+	dbms::get_instance()->create_database(actual.c_str());
+
+	// auto-grant created database to session user (if any)
+	try {
+		if (!creator.empty()) {
+			// call grant helper to persist mapping (execute_grant_db frees its args)
+			execute_grant_db(strdup(actual.c_str()), strdup(creator.c_str()));
+		}
+	} catch (...) {
+		// ignore errors for best-effort grant
+	}
+
 	free((char*)db_name);
 }
 
@@ -393,6 +430,9 @@ void execute_auth(const char *user, const char *pass)
 		return;
 	}
 
+
+ 
+
 	char buf[4096];
 	bool found = false;
 	while (fgets(buf, sizeof(buf), f)) {
@@ -438,3 +478,133 @@ void execute_auth(const char *user, const char *pass)
 }
 
 
+/* engine helpers: grant/revoke and transaction control (moved here to avoid breaking execute_auth) */
+void execute_grant_db(const char *db_name, const char *user)
+{
+	if (!db_name || !user) {
+		if (db_name) free((void*)db_name);
+		if (user) free((void*)user);
+		return;
+	}
+	try {
+		// canonical mapping file format: username=db1,db2
+		std::map<std::string, std::vector<std::string>> mapping;
+		std::ifstream inf("admin_user_dbs.txt");
+		if (inf) {
+			std::string line;
+			while (std::getline(inf, line)) {
+				if (line.empty()) continue;
+				auto pos = line.find('=');
+				if (pos == std::string::npos) continue;
+				std::string uname = line.substr(0, pos);
+				std::string rest = line.substr(pos + 1);
+				std::istringstream ss(rest);
+				std::string db;
+				while (std::getline(ss, db, ',')) {
+					while (!db.empty() && isspace(db.back())) db.pop_back();
+					while (!db.empty() && isspace(db.front())) db.erase(0,1);
+					if (!db.empty()) mapping[uname].push_back(db);
+				}
+			}
+			inf.close();
+		}
+		std::string uname(user);
+		std::string dbn(db_name);
+		auto &vec = mapping[uname];
+		bool found = false;
+		for (auto &d : vec) if (d == dbn) { found = true; break; }
+		if (!found) vec.push_back(dbn);
+		// rewrite mapping file
+		std::ofstream outf("admin_user_dbs.txt", std::ios::trunc);
+		if (outf) {
+			for (const auto &p : mapping) {
+				outf << p.first << "=";
+				for (size_t i = 0; i < p.second.size(); ++i) {
+					if (i) outf << ",";
+					outf << p.second[i];
+				}
+				outf << std::endl;
+			}
+			outf.close();
+			std::printf("[Info] granted %s to %s\n", dbn.c_str(), uname.c_str());
+		} else {
+			std::fprintf(stderr, "[Error] failed to open admin_user_dbs.txt for grant\n");
+		}
+	} catch (...) {
+		// ignore errors
+	}
+	free((void*)db_name);
+	free((void*)user);
+}
+
+void execute_begin_transaction()
+{
+	dbms::get_instance()->begin_transaction();
+}
+
+void execute_commit_transaction()
+{
+	dbms::get_instance()->commit_transaction();
+}
+
+void execute_rollback_transaction()
+{
+	dbms::get_instance()->rollback_transaction();
+}
+
+void execute_revoke_db(const char *db_name, const char *user)
+{
+	if (!db_name || !user) {
+		if (db_name) free((void*)db_name);
+		if (user) free((void*)user);
+		return;
+	}
+	try {
+		std::map<std::string, std::vector<std::string>> mapping;
+		std::ifstream inf("admin_user_dbs.txt");
+		if (inf) {
+			std::string line;
+			while (std::getline(inf, line)) {
+				if (line.empty()) continue;
+				auto pos = line.find('=');
+				if (pos == std::string::npos) continue;
+				std::string uname = line.substr(0, pos);
+				std::string rest = line.substr(pos + 1);
+				std::istringstream ss(rest);
+				std::string db;
+				while (std::getline(ss, db, ',')) {
+					while (!db.empty() && isspace(db.back())) db.pop_back();
+					while (!db.empty() && isspace(db.front())) db.erase(0,1);
+					if (!db.empty()) mapping[uname].push_back(db);
+				}
+			}
+			inf.close();
+		}
+		std::string uname(user);
+		std::string dbn(db_name);
+		auto it = mapping.find(uname);
+		if (it != mapping.end()) {
+			auto &vec = it->second;
+			vec.erase(std::remove(vec.begin(), vec.end(), dbn), vec.end());
+			if (vec.empty()) mapping.erase(it);
+		}
+		std::ofstream outf("admin_user_dbs.txt", std::ios::trunc);
+		if (outf) {
+			for (const auto &p : mapping) {
+				outf << p.first << "=";
+				for (size_t i = 0; i < p.second.size(); ++i) {
+					if (i) outf << ",";
+					outf << p.second[i];
+				}
+				outf << std::endl;
+			}
+			outf.close();
+			std::printf("[Info] revoked %s from %s\n", dbn.c_str(), uname.c_str());
+		} else {
+			std::fprintf(stderr, "[Error] failed to open admin_user_dbs.txt for rewrite on revoke\n");
+		}
+	} catch (...) {
+		// ignore
+	}
+	free((void*)db_name);
+}

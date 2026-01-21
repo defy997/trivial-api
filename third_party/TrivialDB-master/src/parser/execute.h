@@ -25,6 +25,11 @@ void execute_drop_index(const char *table_name, const char *col_name);
 void execute_switch_output(const char *output_filename);
 void execute_quit();
 void execute_auth(const char *user, const char *pass);
+void execute_grant_db(const char *db_name, const char *user);
+void execute_revoke_db(const char *db_name, const char *user);
+void execute_begin_transaction();
+void execute_commit_transaction();
+void execute_rollback_transaction();
 
 #ifdef __cplusplus
 }

@@ -64,6 +64,8 @@ typedef enum {
 	OPERATOR_MIN,
 	OPERATOR_MAX,
 	OPERATOR_COUNT,
+	/* alias */
+	OPERATOR_ALIAS,
 } operator_type_t;
 
 typedef enum {
@@ -141,7 +143,14 @@ typedef struct update_info_t {
 typedef struct select_info_t {
 	linked_list_t *tables, *exprs;
 	expr_node_t *where;
+	linked_list_t *order_by; /* list of order_item_t* */
+	linked_list_t *group_by; /* list of expr_node_t* */
 } select_info_t;
+
+typedef struct order_item_t {
+	expr_node_t *expr;
+	int asc; /* 1 = ASC, 0 = DESC */
+} order_item_t;
 
 typedef struct table_join_info_t {
 	table_join_type_t join_type;

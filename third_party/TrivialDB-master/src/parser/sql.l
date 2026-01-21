@@ -19,12 +19,18 @@ use|USE          { return USE; }
 create|CREATE    { return CREATE; }
 drop|DROP        { return DROP; }
 select|SELECT    { return SELECT; }
+grant|GRANT      { return GRANT; }
+revoke|REVOKE    { return REVOKE; }
 insert|INSERT    { return INSERT; }
 update|UPDATE    { return UPDATE; }
 delete|DELETE    { return DELETE; }
 show|SHOW        { return SHOW; }
 set|SET          { return SET; }
 output|OUTPUT    { return OUTPUT; }
+
+begin|BEGIN      { return T_BEGIN; }
+commit|COMMIT    { return T_COMMIT; }
+rollback|ROLLBACK { return T_ROLLBACK; }
 
 database|DATABASE   { return DATABASE; }
 databases|DATABASES { return DATABASES; }
@@ -60,6 +66,8 @@ as|AS              { return AS; }
 distinct|DISTINCT  { return DISTINCT; }
 group|GROUP        { return GROUP; }
 using|USING        { return USING; }
+
+to|TO              { return TO; }
 
 like|LIKE    { return LIKE; }
 is|IS        { return IS; }

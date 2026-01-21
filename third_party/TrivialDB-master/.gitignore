@@ -1,11 +1,42 @@
-# Ignore build artifacts and binaries
-build/
-bin/
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
 *.o
-*.so
-*.dll
-*.exe
 *.obj
-__pycache__/
-.vscode/
-.DS_Store
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+Makefile
+CMakeCache.txt
+cmake_install.cmake
+CMakeFiles/
+build/
+sql.output
+sql.tab.c
+sql.tab.h
+sql.yy.c

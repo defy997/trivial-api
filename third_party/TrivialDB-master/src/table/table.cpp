@@ -321,6 +321,37 @@ int table_manager::insert_record()
 	return *rid;
 }
 
+bool table_manager::insert_raw_record(int rid, const char *data, int size)
+{
+	if(!is_open) return false;
+	// basic validation size matches expected record size
+	if(size != tmp_record_size) return false;
+
+	// insert into btree directly
+	btr->insert(rid, data, tmp_record_size);
+
+	// update indices
+	int null_mark = ((int*)data)[1];
+	for(int i = 0; i < header.col_num; ++i)
+	{
+		if(i != header.main_index && ((1u << i) & header.flag_indexed))
+		{
+			if(null_mark & (1u << i))
+				indices[i]->insert(nullptr, rid);
+			else
+				indices[i]->insert((const char*)(data + header.col_offset[i]), rid);
+		}
+	}
+
+	// adjust counters if needed
+	if(header.is_main_index_additional)
+	{
+		++header.records_num;
+		if(rid >= header.auto_inc) header.auto_inc = rid + 1;
+	}
+	return true;
+}
+
 bool table_manager::remove_record(int rid)
 {
 	assert(!is_mirror);
