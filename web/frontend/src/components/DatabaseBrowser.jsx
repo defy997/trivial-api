@@ -54,6 +54,18 @@ export default function DatabaseBrowser({ onSelectTable, onLoadQuery, onSelectDa
     }
   }
 
+  // Refresh and collapse UI state (clear expansions, selections, dropdowns)
+  async function refreshAndCollapse() {
+    await loadDatabases();
+    // clear any expanded/selected state and open dropdowns
+    setExpandedKeys([]);
+    setSelectedKeys([]);
+    setOpenDropdownKey(null);
+    setHoveredKey(null);
+    setCurrentDatabase("");
+    setCurrentTable("");
+  }
+
   // 加载数据库下的表和查询
   async function loadDatabaseContent(dbName) {
     try {
@@ -546,7 +558,7 @@ export default function DatabaseBrowser({ onSelectTable, onLoadQuery, onSelectDa
       <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
         <Text strong>数据库浏览器</Text>
         <Space>
-          <Button size="small" onClick={loadDatabases}>
+          <Button size="small" onClick={() => { refreshAndCollapse().catch(()=>{}); }}>
             刷新
           </Button>
           <Button size="small" onClick={() => setCreateDbModalVisible(true)}>
@@ -855,11 +867,11 @@ export default function DatabaseBrowser({ onSelectTable, onLoadQuery, onSelectDa
             const resp = await runSQL(`CREATE DATABASE ${db};`);
             if (resp && resp.returncode && resp.returncode !== 0) {
               message.error("创建数据库失败: " + (resp.stderr || resp.stdout || JSON.stringify(resp)));
-            } else {
+              } else {
               message.success("数据库创建成功");
               setCreateDbModalVisible(false);
               setNewDbName("");
-              await loadDatabases();
+              await refreshAndCollapse();
             }
           } catch (e) {
             message.error("创建数据库失败: " + e.message);

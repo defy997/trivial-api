@@ -7,7 +7,8 @@
       "demo",
       "git",
       "testdb",
-      "chip"
+      "chip",
+      "test_acl"
     ]
   },
   "defy": {
@@ -21,7 +22,10 @@
       "tenant_defy_persist2",
       "tenant_defy_mapped",
       "aaa",
-      "caonima"
+      "caonima",
+      "qwrt",
+      "qwe",
+      "chip"
     ]
   },
   "newtempuser": {

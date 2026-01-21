@@ -16,6 +16,14 @@ export default function TableResult({ data }) {
   // If backend provided structured columns/rows, render as a table
   const cols = data.columns;
   const rows = data.rows;
+  // sanitize header names (remove newlines, collapse whitespace) - shared helper
+  const cleanHeader = (h) => {
+    if (h === null || h === undefined) return "";
+    let s = typeof h === "string" ? h : (h && h.name) ? String(h.name) : String(h);
+    s = s.replace(/\\r\\n/g, " ").replace(/\\n/g, " ").replace(/\\r/g, " ");
+    s = s.replace(/\\s+/g, " ").trim();
+    return s;
+  };
   if (cols && Array.isArray(cols) && rows && Array.isArray(rows)) {
     // sanitize header names (remove newlines, collapse whitespace)
     const cleanHeader = (h) => {
@@ -30,7 +38,7 @@ export default function TableResult({ data }) {
 
     // build table column config with fixed min width and ellipsis, enable horizontal scroll
     const tableColumns = headerNames.map((name, i) => ({
-      title: name || `col${i}`,
+      title: <span style={{ color: '#1890ff' }}>{name || `col${i}`}</span>,
       dataIndex: name,
       key: name || `col${i}`,
       ellipsis: true,
@@ -104,7 +112,7 @@ export default function TableResult({ data }) {
 
     const scrollX = Math.max(finalHeaderNames.length * 150, 800);
     const finalColumns = (finalHeaderNames || headerNames).map((name, i) => ({
-      title: name || `col${i}`,
+      title: <span style={{ color: '#1890ff' }}>{name || `col${i}`}</span>,
       dataIndex: name,
       key: name || `col${i}`,
       ellipsis: true,
@@ -148,25 +156,45 @@ export default function TableResult({ data }) {
 
     if (!lines || lines.length === 0) return null;
 
-    // If contains comma-separated header
-    if (lines.length >= 2 && lines[0].indexOf(",") !== -1) {
-      const headerLine = lines[0];
-      const header = headerLine.split(",").map(h => h.trim()).filter(Boolean).map(h => {
-        // if header has table prefix like customer.age, take suffix
-        const parts = h.split(".");
-        return parts[parts.length - 1];
-      });
-      const dataLines = lines.slice(1).filter(l => l.trim());
-      const rowsParsed = dataLines.map((ln, idx) => {
-        const cols = ln.split(",").map(c => c.trim());
-        const obj = {};
-        header.forEach((h, i) => {
-          obj[h] = cols[i] !== undefined ? cols[i] : "";
-        });
-        obj.__rowid = idx;
-        return obj;
-      });
-      return { columns: header, rows: rowsParsed };
+    // Try to find one or more comma-separated table blocks.
+    // A block is: headerLine (contains commas) followed by 1+ data lines (commas).
+    const tables = [];
+    let i = 0;
+    while (i < lines.length) {
+      const ln = lines[i];
+      if (ln.indexOf(",") !== -1) {
+        // treat as header
+        const headerLine = ln;
+        const header = headerLine
+          .split(",")
+          .map((h) => h.trim())
+          .filter(Boolean)
+          .map((h) => {
+            const parts = h.split(".");
+            return parts[parts.length - 1];
+          });
+        const rows = [];
+        i++;
+        while (i < lines.length && lines[i].indexOf(",") !== -1) {
+          const cols = lines[i].split(",").map((c) => c.trim());
+          const obj = {};
+          header.forEach((h, idx2) => {
+            obj[h] = cols[idx2] !== undefined ? cols[idx2] : "";
+          });
+          obj.__rowid = rows.length;
+          rows.push(obj);
+          i++;
+        }
+        tables.push({ columns: header, rows });
+      } else {
+        i++;
+      }
+    }
+    if (tables.length === 1) {
+      return { columns: tables[0].columns, rows: tables[0].rows };
+    }
+    if (tables.length > 1) {
+      return { tables };
     }
 
     // fallback: try pipe-separated or whitespace (not implemented here)
@@ -175,20 +203,88 @@ export default function TableResult({ data }) {
 
   const parsedFallback = tryParse(rawText);
   if (parsedFallback) {
-    const { columns: pCols, rows: pRows } = parsedFallback;
-    const tableColumns = pCols.map((name, i) => ({
-      title: name,
-      dataIndex: name,
-      key: name || `col${i}`,
-      ellipsis: true,
-      width: 150,
-    }));
-    const dataSource = (pRows || []).map((r, idx) => ({ key: r.__rowid || idx, ...r }));
-    return (
-      <Card title="结果">
-        <Table columns={tableColumns} dataSource={dataSource} pagination={false} size="small" scroll={{ x: Math.max(pCols.length * 150, 800) }} />
-      </Card>
-    );
+    // single table
+    if (parsedFallback.columns && parsedFallback.rows) {
+      const pCols = parsedFallback.columns;
+      const pRows = parsedFallback.rows;
+      const tableColumns = pCols.map((name, i) => ({
+        title: name,
+        dataIndex: name,
+        key: name || `col${i}`,
+        ellipsis: true,
+        width: 150,
+      }));
+      const dataSource = (pRows || []).map((r, idx) => ({ key: r.__rowid || idx, ...r }));
+      return (
+        <Card title="结果">
+          <Table columns={tableColumns} dataSource={dataSource} pagination={false} size="small" scroll={{ x: Math.max(pCols.length * 150, 800) }} />
+        </Card>
+      );
+    }
+    // multiple tables: render stacked tables with a blank separator line and consistent header formatting
+    if (parsedFallback.tables && Array.isArray(parsedFallback.tables)) {
+      return (
+        <Card title="结果">
+          {parsedFallback.tables.map((tbl, idx) => {
+            const origCols = tbl.columns || [];
+            const pRows = tbl.rows || [];
+            const cleanedCols = origCols.map(cleanHeader);
+            // mapping original header -> cleaned header
+            const origToClean = {};
+            origCols.forEach((oc, i) => { origToClean[oc] = cleanedCols[i]; });
+
+            const tableColumns = cleanedCols.map((name, i) => ({
+              title: <span style={{ color: '#1890ff' }}>{name || `col${i}`}</span>,
+              dataIndex: name,
+              key: `${name || `col${i}`}-${idx}`,
+              ellipsis: true,
+              width: 150,
+            }));
+
+            // filter out rows that are just header names (e.g., parser produced header as a data row)
+            const rawRows = pRows || [];
+            const filteredRows = rawRows.filter((r) => {
+              if (!r) return false;
+              // if every column value equals the original header or cleaned header, treat as header-row and drop it
+              let allMatchHeader = true;
+              for (const oc of origCols) {
+                const val = r[oc] !== undefined && r[oc] !== null ? String(r[oc]).trim() : "";
+                const cleaned = String(origToClean[oc] || cleanHeader(oc)).trim();
+                if (val === "") {
+                  // empty cell -> not necessarily header-only, mark as not-matching header
+                  allMatchHeader = false;
+                  break;
+                }
+                if (val !== cleaned && val !== String(oc).trim()) {
+                  allMatchHeader = false;
+                  break;
+                }
+              }
+              return !allMatchHeader;
+            });
+
+            const dataSource = (filteredRows || []).map((r, ridx) => {
+              const obj = {};
+              origCols.forEach((oc) => {
+                const ck = origToClean[oc] || cleanHeader(oc);
+                obj[ck] = r[oc] !== undefined ? r[oc] : "";
+              });
+              obj.key = `${idx}-${ridx}`;
+              return obj;
+            });
+
+            return (
+              <div key={`tbl-${idx}`} style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>
+                  {`Query ${idx + 1} - SELECT result`}
+                </div>
+                <Table columns={tableColumns} dataSource={dataSource} pagination={false} size="small" scroll={{ x: Math.max(cleanedCols.length * 150, 800) }} />
+              </div>
+            );
+          })}
+        </Card>
+      );
+    }
   }
 
   // Final fallback: show raw text

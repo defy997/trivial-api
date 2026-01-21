@@ -92,14 +92,17 @@ export default function AdminPanel() {
       key: 'patterns',
       render: (patterns) => (
           <Space wrap>
-          {patterns.length === 0 ? (
-            <Tag color="default">无权限</Tag>
-          ) : (
-            patterns.map((pattern, index) => (
-              <Tag key={index} color="blue" icon={<DatabaseOutlined />}>
-                {pattern}
-                </Tag>
-              ))
+            {(!patterns || patterns.length === 0) && <Tag color="default">无权限</Tag>}
+            {Array.isArray(patterns) && patterns.length > 0 && (
+              patterns.includes('*') ? (
+                <Tag color="blue" icon={<DatabaseOutlined />}>*</Tag>
+              ) : (
+                patterns.map((pattern, index) => (
+                  <Tag key={index} color="blue" icon={<DatabaseOutlined />}>
+                    {pattern}
+                  </Tag>
+                ))
+              )
             )}
           </Space>
       )
